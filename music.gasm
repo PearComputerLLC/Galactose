@@ -1,0 +1,56 @@
+; Melody using r255 for Timing
+; r200 = Trigger Play (Frequency)
+; r201 = Sound Duration (ms)
+; r255 = Instruction Delay (ms) - The "Sleep" equivalent
+
+; --- INITIAL SETUP ---
+PUSH 400      ; Sound lasts 400ms
+POP r201
+PUSH 1        ; Default VM speed (1ms delay)
+POP r255
+
+; --- NOTE 1: A4 ---
+PUSH 440      ; A4
+POP r200
+PUSH 400      ; Wait 400ms for note to "finish"
+POP r255
+
+; --- REST 1 (1 Second) ---
+PUSH 1000     ; Set VM delay to 1000ms
+POP r255
+PUSH 0        ; Trigger a "silent" cycle to apply the delay
+POP r200
+
+; --- NOTE 2: B4 ---
+PUSH 1        ; Reset VM speed briefly to process next note
+POP r255
+PUSH 493      ; B4
+POP r200
+PUSH 400      ; Wait for note
+POP r255
+
+; --- REST 2 (1 Second) ---
+PUSH 1000
+POP r255
+PUSH 0
+POP r200
+
+; --- NOTE 3: C5 ---
+PUSH 1
+POP r255
+PUSH 523      ; C5
+POP r200
+PUSH 400
+POP r255
+
+; --- FINAL REST (1 Second) ---
+PUSH 1000
+POP r255
+PUSH 0
+POP r200
+
+; --- RESET VM SPEED ---
+PUSH 33       ; Return to standard 30fps-ish speed
+POP r255
+
+HALT

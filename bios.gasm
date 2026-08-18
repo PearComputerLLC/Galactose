@@ -1,0 +1,61 @@
+; =====================================================================
+; Galactose VM BIOS Startup Program (bios.gasm)
+; =====================================================================
+; This BIOS runs first starting at PC=0, plays an ascending chime,
+; writes "BIOS OK" to the screen (using VRAM text mode), and gracefully
+; falls through to the main program by not calling HALT.
+
+; --- Step 1: Set Sound Duration ---
+PUSH 150        ; 150 ms duration
+POP R201        ; R201 is the duration register (dur_reg)
+
+; --- Step 2: Play Note 1 (E5 - 659 Hz) ---
+PUSH 659        ; Frequency: 659 Hz (E5)
+POP R200        ; R200 is the frequency register (freq_reg, triggers playback)
+
+; Delay to let the first note play before triggering the next
+PUSH 180        ; 180 ms sleep delay
+POP R255        ; R255 is the timing register (sleeps the thread)
+
+; --- Step 3: Play Note 2 (A5 - 880 Hz) ---
+PUSH 880        ; Frequency: 880 Hz (A5)
+POP R200        ; Triggers tone playback
+
+PUSH 300        ; 300 ms sleep delay to allow sound to finish
+POP R255
+
+; --- Step 4: Write "BIOS OK" to VRAM (default Text Mode) ---
+; VRAM automatically draws text sequentially for non-zero bytes.
+; We store ASCII values directly to early VRAM addresses.
+
+PUSH 66         ; ASCII 'B'
+POP R10
+STORE 0 R10     ; Store at VRAM index 0
+
+PUSH 73         ; ASCII 'I'
+POP R10
+STORE 1 R10     ; Store at VRAM index 1
+
+PUSH 79         ; ASCII 'O'
+POP R10
+STORE 2 R10     ; Store at VRAM index 2
+
+PUSH 83         ; ASCII 'S'
+POP R10
+STORE 3 R10     ; Store at VRAM index 3
+
+PUSH 32         ; ASCII ' ' (Space)
+POP R10
+STORE 4 R10     ; Store at VRAM index 4
+
+PUSH 79         ; ASCII 'O'
+POP R10
+STORE 5 R10     ; Store at VRAM index 5
+
+PUSH 75         ; ASCII 'K'
+POP R10
+STORE 6 R10     ; Store at VRAM index 6
+
+; --- BIOS Setup Complete ---
+; We purposely do NOT issue HALT here.
+; The VM will naturally fall through to run the main program bytecodes.

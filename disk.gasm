@@ -1,0 +1,46 @@
+; Galactose VM Disk I/O Example
+; This program writes a sequence of bytes to RAM,
+; commits them to disk, then reads them back.
+
+; --- Step 1: Prepare data in RAM ---
+PUSH 104        ; ASCII 'h'
+POP R1
+RAM_STORE 0 R1  ; Write 'h' to RAM address 0
+
+PUSH 101        ; ASCII 'e'
+POP R1
+RAM_STORE 1 R1  ; Write 'e' to RAM address 1
+
+PUSH 121        ; ASCII 'y'
+POP R1
+RAM_STORE 2 R1  ; Write 'y' to RAM address 2
+
+; --- Step 2: Write to Disk ---
+PUSH 0          ; Start address in RAM
+PUSH 3          ; Number of bytes to write
+WRITE_DISK      ; Commits RAM[0:3] to disk.gsd
+
+; --- Step 3: Clear RAM to prove read works ---
+PUSH 0
+POP R1
+RAM_STORE 0 R1
+RAM_STORE 1 R1
+RAM_STORE 2 R1
+
+; --- Step 4: Read from Disk ---
+PUSH 0          ; Destination address in RAM
+PUSH 3          ; Number of bytes to read
+READ_DISK       ; Loads disk data into RAM[0:3]
+
+; --- Step 5: Visual Verification (VRAM) ---
+; Load from RAM and STORE to VRAM to see it on screen
+LOAD R10 0      ; Load 'h' from RAM
+STORE 0 R10     ; Display 'h' at VRAM 0
+
+LOAD R11 1      ; Load 'e' from RAM
+STORE 1 R11     ; Display 'e' at VRAM 1
+
+LOAD R12 2      ; Load 'y' from RAM
+STORE 2 R12     ; Display 'y' at VRAM 2
+
+HALT

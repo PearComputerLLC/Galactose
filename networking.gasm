@@ -1,0 +1,112 @@
+; =====================================================================
+; Galactose VM TCP Network Client Example (networking.gasm)
+; =====================================================================
+; This program sets up a connection to "127.0.0.1" on port 5000,
+; polls the async connection status, and sends "PING" to the target.
+
+; --- Step 1: Write Null-Terminated IP "127.0.0.1" to RAM ---
+; Let's write the characters of "127.0.0.1\0" sequentially into RAM starting at 100.
+PUSH 49         ; '1'
+POP R1
+RAM_STORE 100 R1
+PUSH 50         ; '2'
+POP R1
+RAM_STORE 101 R1
+PUSH 55         ; '7'
+POP R1
+RAM_STORE 102 R1
+PUSH 46         ; '.'
+POP R1
+RAM_STORE 103 R1
+PUSH 48         ; '0'
+POP R1
+RAM_STORE 104 R1
+PUSH 46         ; '.'
+POP R1
+RAM_STORE 105 R1
+PUSH 48         ; '0'
+POP R1
+RAM_STORE 106 R1
+PUSH 46         ; '.'
+POP R1
+RAM_STORE 107 R1
+PUSH 49         ; '1'
+POP R1
+RAM_STORE 108 R1
+PUSH 0          ; Null terminator '\0'
+POP R1
+RAM_STORE 109 R1
+
+; --- Step 2: Write Message "PING" to RAM ---
+; We will write "PING" starting at RAM address 200
+PUSH 80         ; 'P'
+POP R1
+RAM_STORE 200 R1
+PUSH 73         ; 'I'
+POP R1
+RAM_STORE 201 R1
+PUSH 78         ; 'N'
+POP R1
+RAM_STORE 202 R1
+PUSH 71         ; 'G'
+POP R1
+RAM_STORE 203 R1
+
+; --- Step 3: Configure Network Registers for Connection ---
+PUSH 100
+POP R211        ; NET_ADDR_PTR = 100 (Address of "127.0.0.1")
+
+PUSH 5000
+POP R212        ; NET_PORT = 5000
+
+PUSH 0
+POP R218        ; NET_PROTO = 0 (TCP Mode)
+
+; --- Step 4: Trigger Asynchronous TCP Connect ---
+PUSH 1
+POP R210        ; NET_CMD = 1 (TCP Connect)
+
+; --- Step 5: Poll NET_STATUS until we are connected (Status 2) ---
+POLL_CONNECT:
+PUSH 100        ; Sleep for 100ms between polls to avoid a tight CPU loop
+POP R255
+
+PUSH_REG R217   ; Push current value of NET_STATUS to stack
+PUSH 1          ; Check if status is still 1 (busy connecting)
+SUB             ; Subtract (Status - 1)
+JZ POLL_CONNECT ; If the result is 0 (meaning busy), loop back and poll again
+
+; Let's check if connection completed successfully (Status 2) or failed (Status 3)
+PUSH_REG R217   ; Push NET_STATUS
+PUSH 2          ; 2 = connected / data_ready
+SUB             ; Subtract (Status - 2)
+JZ SEND_DATA    ; If the result is 0 (connected!), jump to SEND_DATA
+HALT            ; Otherwise connection failed, halt execution.
+
+SEND_DATA:
+; --- Step 6: Configure Network Registers for Transfer ---
+PUSH 200
+POP R213        ; NET_BUF_PTR = 200 (Address of "PING")
+
+PUSH 4
+POP R214        ; NET_BUF_LEN = 4 bytes
+
+; --- Step 7: Trigger Network Send ---
+PUSH 2
+POP R210        ; NET_CMD = 2 (TCP Send)
+
+; --- Step 8: Poll for Send Completion ---
+POLL_SEND:
+PUSH 50
+POP R255
+
+PUSH_REG R217   ; Push NET_STATUS
+PUSH 1          ; Check if busy sending
+SUB
+JZ POLL_SEND    ; If busy, keep polling
+
+; --- Step 9: Cleanly Close Socket and Finish ---
+PUSH 4
+POP R210        ; NET_CMD = 4 (Close Socket)
+
+HALT

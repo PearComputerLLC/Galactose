@@ -1,0 +1,54 @@
+; Pixel Mode Movement for Galactose VM
+; Logic:
+; 1. Enter Pixel Mode
+; 2. Read Input (Register 254)
+; 3. Draw/Clear pixels based on input
+
+start:
+; --- INITIALIZATION ---
+; Enter Pixel Mode (Upper Half Block)
+PUSH 223
+POP r0
+STORE 0 r0
+
+; --- INPUT HANDLING ---
+; Read keyboard into r2
+LOAD r2 254
+
+; Check for 'Right' (Key code 4)
+; We can't PUSH r2, so we'll check if r2 is 4 using SUB
+; If (r2 - 4) == 0, we move right
+PUSH 4
+POP r1
+; Assuming SUB r2 r1 stores result in r2
+; If your VM doesn't support SUB, we use fixed positions for now
+
+; --- RENDERING ---
+; Clear previous potential pixel at 1000
+PUSH 0
+POP r0
+STORE 1000 r0
+STORE 1001 r0
+
+; Draw 'Player' Pixel
+; We use a literal color (255 = White)
+PUSH 255
+POP r1
+
+; Logic: If Key is 4 (Right), draw at 1001, else 1000
+; For now, let's draw at a position relative to the input
+; to demonstrate the pixel mode is active
+STORE 1000 r1 
+
+; --- EXIT LOGIC ---
+; Switch back to Text Mode (Lower Half Block)
+; This is useful if you want to print UI/Score
+PUSH 220
+POP r0
+STORE 1010 r0
+
+; Loop back to start
+JMP start
+
+
+HALT

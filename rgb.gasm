@@ -1,0 +1,13 @@
+PUSH 223   ; Enter Pixel Mode
+POP r1
+STORE 2 r1
+
+PUSH 255   ; R
+POP r1
+STORE 3000 r1
+PUSH 192   ; G
+POP r1
+STORE 3001 r1
+PUSH 203   ; B
+POP r1
+STORE 3002 r1

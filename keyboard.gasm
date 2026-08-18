@@ -1,0 +1,26 @@
+; hi.gasm
+; Waits for space to be pressed, then prints "hi" in text mode.
+
+wait_loop:
+    PUSH_REG 254    ; push input register (32 = space, 0 = nothing)
+    PUSH 32         ; push 32
+    SUB             ; result = input - 32 (0 if space pressed)
+    JZ print        ; jump if space was pressed
+    PUSH 16         ; sleep 16ms to avoid busy-spinning
+    POP r255
+    JMP wait_loop
+
+print:
+    PUSH 220        ; 0xDC = switch to text mode
+    POP r0
+    STORE 0 r0
+
+    PUSH 104        ; 'h'
+    POP r0
+    STORE 1 r0
+
+    PUSH 105        ; 'i'
+    POP r0
+    STORE 2 r0
+
+    HALT

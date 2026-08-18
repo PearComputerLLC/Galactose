@@ -1,0 +1,45 @@
+; =====================================================================
+; Galactose VM Removable Disk Image (Disk 1) Example (image.gasm)
+; =====================================================================
+; This program selects the removable image (Disk 1), writes a
+; sequence of bytes ("OK") to system RAM, commits them to the image,
+; clears RAM, reads them back, and verifies by displaying them in VRAM.
+
+; --- Step 1: Select Disk 1 (Removable Image) ---
+PUSH 1
+POP R202        ; Write 1 to register 202 (disk_sel_reg) to select Disk 1
+
+; --- Step 2: Prepare "OK" data in system RAM ---
+PUSH 79         ; ASCII 'O'
+POP R1
+RAM_STORE 0 R1  ; Write 'O' to RAM address 0
+
+PUSH 75         ; ASCII 'K'
+POP R1
+RAM_STORE 1 R1  ; Write 'K' to RAM address 1
+
+; --- Step 3: Write to Disk 1 ---
+PUSH 0          ; Start offset in RAM
+PUSH 2          ; Number of bytes to write (length of "OK")
+WRITE_DISK      ; Commits RAM[0:2] to the image file (--image)
+
+; --- Step 4: Clear RAM to prove the subsequent read works ---
+PUSH 0
+POP R1
+RAM_STORE 0 R1
+RAM_STORE 1 R1
+
+; --- Step 5: Read from Disk 1 ---
+PUSH 0          ; Destination offset in RAM
+PUSH 2          ; Number of bytes to read
+READ_DISK       ; Loads data from active disk back into RAM[0:2]
+
+; --- Step 6: Visual Verification (VRAM) ---
+; Load values back from system RAM and place them in VRAM to view on screen
+LOAD R10 0      ; Load RAM address 0 (should be 'O' again)
+STORE 15 R10    ; Display at VRAM offset 15
+
+LOAD R11 1      ; Load RAM address 1 (should be 'K' again)
+STORE 16 R11    ; Display at VRAM offset 16
+
+HALT

@@ -1,0 +1,25 @@
+PUSH 72; 'H'
+POP r1
+STORE 0 r1
+PUSH 73; 'I'
+POP r1
+STORE 1 r1
+
+PUSH 223; '▀' Enter Pixel Mode
+POP r1
+STORE 2 r1
+
+PUSH 255; White pixel
+POP r2
+STORE 1000 r2
+STORE 1001 r2
+STORE 1002 r2
+
+PUSH 220; '▄' Back to Text
+POP r1
+STORE 1003 r1
+
+PUSH 33; '!'
+POP r1
+STORE 1004 r1
+HALT
