@@ -1,3 +1,5 @@
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/PearComputerLLC/Galactose)
+
 Galactose
 
 A Lightweight, Turing-Complete 13-Opcode RISC ISA
