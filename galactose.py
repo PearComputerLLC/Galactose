@@ -2,6 +2,7 @@ import struct
 import sys
 import argparse
 import tkinter as tk
+import tkinter.font as tkfont
 import time
 import threading
 import subprocess
@@ -55,10 +56,17 @@ class GSDXHeader:
             - Used Data Size: uint64
             - Block Size: uint32 (default 4096)
             - Block Count: uint32
+            - BAT Capacity: uint64 (BAT entries reserved in the file)
             - Reserved: 80 bytes
         
         Block Allocation Table (BAT):
             - Per block: uint64 offset (0 = unallocated)
+            - Only the first Block Count entries follow the header; the rest
+              of the BAT region (BAT Capacity entries) stays zero on disk
+        
+        Data region:
+            - Starts at the fixed offset HEADER_SIZE + BAT Capacity * 8, so
+              the growing BAT can never overwrite data blocks
         
         Data Blocks:
             - Only allocated blocks stored here
@@ -68,6 +76,15 @@ class GSDXHeader:
     MAGIC = b'GSDX'
     VERSION = 0x0001
     HEADER_SIZE = 128
+
+    # Fixed header layout: magic, version, flags, max_size, allocated_size,
+    # used_data_size, bat_capacity, block_size, block_count
+    # -> 4 + 2 + 2 + (8 * 4) + 4 + 4 = 48 bytes, + 80 reserved = 128 exactly.
+    _FIXED_STRUCT = struct.Struct('<4sHHQQQQII')
+
+    # Default BAT capacity for images with no maximum size
+    # (65536 entries = 256MB addressable with the default 4KB blocks)
+    DEFAULT_BAT_CAPACITY = 65536
     
     # Flag bits
     FLAG_COMPRESSED = 0x0001
@@ -83,6 +100,7 @@ class GSDXHeader:
         self.block_size = 4096     # Default 4KB blocks
         self.block_count = 0
         self.bat: List[int] = []   # Block Allocation Table
+        self.bat_capacity = 0      # Max BAT entries reserved in the file
         self._data_offset = 0      # Where data blocks start
     
     @classmethod
@@ -90,27 +108,39 @@ class GSDXHeader:
         """Parse GSDX header from file. Returns None if not a valid GSDX file."""
         try:
             with open(path, 'rb') as f:
-                magic = f.read(4)
+                fixed = f.read(cls.HEADER_SIZE)
+                if len(fixed) < cls.HEADER_SIZE:
+                    print("[GSDX] File too small to be a valid GSDX image")
+                    return None
+
+                header = cls()
+                (magic, header.version, header.flags, header.max_size,
+                 header.allocated_size, header.used_data_size,
+                 header.bat_capacity, header.block_size,
+                 header.block_count) = cls._FIXED_STRUCT.unpack_from(fixed, 0)
+
                 if magic != cls.MAGIC:
                     return None
-                
-                header = cls()
-                header.version = struct.unpack('<H', f.read(2))[0]
-                header.flags = struct.unpack('<H', f.read(2))[0]
-                header.max_size = struct.unpack('<Q', f.read(8))[0]
-                header.allocated_size = struct.unpack('<Q', f.read(8))[0]
-                header.used_data_size = struct.unpack('<Q', f.read(8))[0]
-                header.block_size = struct.unpack('<I', f.read(4))[0]
-                header.block_count = struct.unpack('<I', f.read(4))[0]
-                
-                # Skip reserved (80 bytes)
-                f.read(80)
-                
-                header._data_offset = cls.HEADER_SIZE + (header.block_count * 8)
-                
-                # Read Block Allocation Table
+
+                # Sanity-check the BAT capacity before trusting it
+                if header.bat_capacity == 0 or header.bat_capacity > (1 << 24):
+                    print(f"[GSDX] Invalid BAT capacity: {header.bat_capacity}")
+                    return None
+
+                # Data blocks live after the full (reserved) BAT region
+                header._data_offset = cls.HEADER_SIZE + header.bat_capacity * 8
+
+                # Read the used entries of the Block Allocation Table
                 if header.block_count > 0:
+                    if header.block_count > header.bat_capacity:
+                        print(f"[GSDX] Corrupt header: block_count "
+                              f"{header.block_count} exceeds BAT capacity "
+                              f"{header.bat_capacity}")
+                        return None
                     bat_data = f.read(header.block_count * 8)
+                    if len(bat_data) < header.block_count * 8:
+                        print("[GSDX] Truncated Block Allocation Table")
+                        return None
                     header.bat = list(struct.unpack(f'<{header.block_count}Q', bat_data))
                 
                 return header
@@ -124,23 +154,39 @@ class GSDXHeader:
         header = cls()
         header.max_size = max_size_mb * 1024 * 1024 if max_size_mb > 0 else 0
         header.block_size = block_size
-        header._data_offset = cls.HEADER_SIZE  # BAT starts empty
+        if header.max_size > 0:
+            # Reserve enough BAT entries to address every block of the
+            # maximum theoretical size
+            header.bat_capacity = (header.max_size + block_size - 1) // block_size
+        else:
+            header.bat_capacity = cls.DEFAULT_BAT_CAPACITY
+        # Data blocks start after the full (reserved) BAT region, so the BAT
+        # can grow without ever overwriting data
+        header._data_offset = cls.HEADER_SIZE + header.bat_capacity * 8
         return header
     
     def to_bytes(self) -> bytes:
-        """Serialize header to bytes for writing to file."""
+        """Serialize header to bytes for writing to file.
+
+        Produces the fixed 128-byte header followed by only the *used* BAT
+        entries; the remainder of the BAT region was zeroed when the image
+        was created and never needs rewriting.
+        """
         data = bytearray()
-        data.extend(self.MAGIC)                         # 4 bytes
-        data.extend(struct.pack('<H', self.version))     # 2 bytes
-        data.extend(struct.pack('<H', self.flags))       # 2 bytes
-        data.extend(struct.pack('<Q', self.max_size))     # 8 bytes
-        data.extend(struct.pack('<Q', self.allocated_size))  # 8 bytes
-        data.extend(struct.pack('<Q', self.used_data_size))  # 8 bytes
-        data.extend(struct.pack('<I', self.block_size))  # 4 bytes
-        data.extend(struct.pack('<I', self.block_count)) # 4 bytes
+        data.extend(self._FIXED_STRUCT.pack(
+            self.MAGIC,
+            self.version,
+            self.flags,
+            self.max_size,
+            self.allocated_size,
+            self.used_data_size,
+            self.bat_capacity,
+            self.block_size,
+            self.block_count,
+        ))
         data.extend(b'\x00' * 80)                       # 80 bytes reserved
         
-        # Write BAT
+        # Write the used BAT entries
         if self.bat:
             data.extend(struct.pack(f'<{len(self.bat)}Q', *self.bat))
         
@@ -154,6 +200,12 @@ class GSDXHeader:
     
     def allocate_block(self, block_index: int, file_offset: int):
         """Record that a block has been allocated at the given offset."""
+        if block_index >= self.bat_capacity:
+            raise RuntimeError(
+                f"GSDX BAT capacity exceeded ({self.bat_capacity} blocks, "
+                f"~{self.bat_capacity * self.block_size // (1024 * 1024)}MB). "
+                "Recreate the image with a larger --disk-size."
+            )
         while len(self.bat) <= block_index:
             self.bat.append(0)
         self.bat[block_index] = file_offset
@@ -184,7 +236,11 @@ class GSDXDiskImage:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         
         with open(self.path, 'wb') as f:
+            # Fixed 128-byte header, then the FULL BAT region zeroed out.
+            # Zeroed entries stay valid forever: later updates only rewrite
+            # the used entries, and data starts after the whole region.
             f.write(self.header.to_bytes())
+            f.write(b'\x00' * (self.header.bat_capacity * 8))
         
         print(f"[GSDX] Created new image: {self.path}")
         print(f"       Max size: {max_size_mb}MB" if max_size_mb else "       Max size: unlimited")
@@ -263,7 +319,6 @@ class GSDXDiskImage:
                 file_block_offset = data_offset_pos
                 self.header.allocate_block(block_index, file_block_offset)
                 data_offset_pos += self.header.block_size
-                self._update_header()
             
             # Write the data
             with open(self.path, 'r+b') as f:
@@ -291,7 +346,10 @@ class GSDXDiskImage:
                 max_offset = block_off
         
         if max_offset == 0:
-            return self.header.HEADER_SIZE + (len(self.header.bat) * 8) + 100
+            # No blocks allocated yet: data starts right after the reserved
+            # BAT region. Data must NEVER be placed near the header — the BAT
+            # grows by 8 bytes per allocated block and would overwrite it.
+            return self.header._data_offset
         return max_offset + self.header.block_size
     
     def _update_header(self):
@@ -521,7 +579,7 @@ class BytecodeVM:
         if not self.disk_path.exists():
             # Auto-detect format from extension
             if self.disk_path.suffix.lower() == '.gsdx':
-                self._create_blank_gsdx(self.disk_path, 512)
+                self.create_blank_gsdx(self.disk_path, 512)
             else:
                 self.create_blank_disk(self.disk_path, 512)
         
@@ -762,11 +820,50 @@ class BytecodeVM:
         self.canvas = tk.Canvas(self.root, width=self.width, height=self.height, bg="black", highlightthickness=0)
         self.canvas.pack()
         # PhotoImage used for bulk pixel rendering — far cheaper than per-pixel create_rectangle calls
-        self.photo = tk.PhotoImage(width=self.width, height=self.height)
+        # (master=self.root pins the image to THIS Tk interpreter; without it
+        # the image silently binds to the default root and create_image
+        # fails with "pyimage1 does not exist" if more than one root exists)
+        self.photo = tk.PhotoImage(master=self.root, width=self.width, height=self.height)
         self.canvas.create_image(0, 0, anchor="nw", image=self.photo)
+        # ── Text font: pixel-locked monospace (Retina/DPI safe) ────────────
+        # A positive size ("Monaco", 12) is in POINTS, so Tk scales it by the
+        # display DPI (tk scaling ≈ 2.0 on Retina): glyphs end up ~14px wide
+        # while the text renderer still advances 8px per cell → squished,
+        # overlapping characters.  A NEGATIVE size is in PIXELS and is never
+        # DPI-scaled, so the glyphs stay metric-locked to the cell grid.
+        self.text_font = self._pick_mono_font()
+        # Measure the real cell metrics of the chosen font and drive the text
+        # grid from them instead of the hard-coded 8px/18px bitmap-era grid.
+        self.char_w = max(1, self.text_font.measure("M"))   # monospace ⇒ every glyph identical
+        self.line_h = max(self.text_font.metrics("linespace"), 10)
         self.root.bind("<KeyPress>", self._on_key_press)
         self.root.bind("<KeyRelease>", self._on_key_release)
         self.update_display()
+
+    def _pick_mono_font(self) -> "tkfont.Font":
+        """Pick an available, genuinely fixed-pitch font for the text overlay.
+
+        Monaco was the classic macOS terminal font, but recent macOS releases
+        may not resolve it — Tk then silently substitutes a PROPORTIONAL
+        system font, which renders with uneven ("squished") spacing.  So try
+        known monospace families per platform and VERIFY fixed-pitch by
+        comparing the measured widths of a narrow and a wide glyph; fall back
+        to Tk's built-in fixed font, which is always monospace.
+        """
+        candidates = [
+            "Menlo", "Monaco", "SF Mono", "Andale Mono",   # macOS
+            "Consolas", "Cascadia Mono", "Courier New",     # Windows
+            "DejaVu Sans Mono", "Liberation Mono",          # Linux/X11
+        ]
+        available = set(tkfont.families(self.root))
+        for name in candidates:
+            if name in available:
+                font = tkfont.Font(root=self.root, family=name, size=-12)
+                if font.measure("i") == font.measure("W"):  # truly monospace
+                    return font
+        fixed = tkfont.nametofont("TkFixedFont")            # guaranteed fixed-pitch
+        fixed.configure(size=-12)
+        return fixed
 
     def _on_key_press(self, event):
         mapping = {"Up": 1, "Down": 2, "Left": 3, "Right": 4}
@@ -803,10 +900,10 @@ class BytecodeVM:
 
             if mode == "text" and byte != 0:
                 text_items.append((cursor_x, cursor_y, chr(byte)))
-                cursor_x += 8
-                if cursor_x > self.width - 20:
+                cursor_x += self.char_w
+                if cursor_x + self.char_w > self.width - 10:
                     cursor_x = 10
-                    cursor_y += 18
+                    cursor_y += self.line_h
                 i += 1
             elif mode == "pixel":
                 if i + 2 < len(vram_view):
@@ -830,7 +927,7 @@ class BytecodeVM:
         # Redraw text overlay on top of the image
         self.canvas.delete("text_overlay")
         for (tx, ty, ch) in text_items:
-            self.canvas.create_text(tx, ty, text=ch, fill="white", font=("Monaco", 12), anchor="nw", tags="text_overlay")
+            self.canvas.create_text(tx, ty, text=ch, fill="white", font=self.text_font, anchor="nw", tags="text_overlay")
 
         self.root.after(33, self.update_display)
 
