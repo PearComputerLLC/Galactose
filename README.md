@@ -9,7 +9,7 @@ Galactose is a minimalist 13-opcode RISC Instruction Set Architecture (ISA) that
 Turing-complete — capable of scaling to any computational task.
 Learnable in a day — simple and consistent, perfect for enthusiasts and professionals alike.
 Portable and adaptable — designed to run anywhere, from embedded systems to large-scale systems.
-Tiny and self-contained — just a 26KB Python file powering the VM, compiler, and test environment.
+Tiny and self-contained — just a 43KB Python file powering the VM, compiler, and test environment.
 
 Unlike typical RISC ISAs that demand specialization and complexity, Galactose thrives on extreme simplicity while maintaining full computational power.
 
