@@ -20,19 +20,24 @@ from pathlib import Path
 # ISA definition (must match galactose.py exactly)
 # ---------------------------------------------------------------------------
 
+# An address operand >= INDIRECT_BASE is register-indirect: it is written as a
+# register name (e.g. r50) and the effective address / jump target is
+# registers[addr & 0xFF].
+INDIRECT_BASE = 0xF0000000
+
 OPCODES = {
     0x01: ("PUSH",      "imm32"),   # PUSH <int32>
     0x02: ("POP",       "reg"),     # POP  <reg>
     0x03: ("ADD",       ""),        # ADD
-    0x04: ("JMP",       "addr32"),  # JMP  <uint32>
-    0x05: ("JZ",        "addr32"),  # JZ   <uint32>
+    0x04: ("JMP",       "addr32"),  # JMP  <uint32|label|reg rN>
+    0x05: ("JZ",        "addr32"),  # JZ   <uint32|label|reg rN>
     0x06: ("HALT",      ""),        # HALT
     0x07: ("SUB",       ""),        # SUB
-    0x08: ("LOAD",      "reg_addr"),# LOAD <reg> <addr32>
-    0x09: ("STORE",     "addr_reg"),# STORE <addr32> <reg>
+    0x08: ("LOAD",      "reg_addr"),# LOAD <reg> <addr32|reg rN>
+    0x09: ("STORE",     "addr_reg"),# STORE <addr32|reg rN> <reg>
     0x0A: ("WRITE_DISK",""),        # WRITE_DISK
     0x0B: ("READ_DISK", ""),        # READ_DISK
-    0x0C: ("RAM_STORE", "addr_reg"),# RAM_STORE <addr32> <reg>
+    0x0C: ("RAM_STORE", "addr_reg"),# RAM_STORE <addr32|reg rN> <reg>
     0x0D: ("PUSH_REG",  "reg"),     # PUSH_REG <reg>
 }
 
@@ -70,6 +75,13 @@ def reg_name_plain(r: int) -> str:
     return f"r{r}"
 
 
+def addr_operand(addr: int) -> str:
+    """Render an address operand, showing register-indirect form as rN."""
+    if addr >= INDIRECT_BASE:
+        return reg_name_plain(addr & 0xFF)
+    return f"0x{addr:08X}"
+
+
 # ---------------------------------------------------------------------------
 # Core decompiler
 # ---------------------------------------------------------------------------
@@ -98,7 +110,7 @@ def decompile(data: bytes) -> list[dict]:
         if fmt in ("imm32", "addr32"):
             if _pc + 4 <= n:
                 val = struct.unpack_from("<I", data, _pc)[0]
-                if fmt == "addr32":
+                if fmt == "addr32" and val < INDIRECT_BASE:
                     jump_targets.add(val)
             _pc += 4
         elif fmt == "reg":
@@ -142,9 +154,14 @@ def decompile(data: bytes) -> list[dict]:
             raw += val_bytes
             addr = struct.unpack_from("<I", data, pc)[0]  # unsigned
             pc += 4
-            lbl = label_map.get(addr, f"0x{addr:08X}")
-            operands = lbl
-            comment = f"→ byte {addr}"
+            if addr >= INDIRECT_BASE:                 # JMP/JZ rN (indirect)
+                rn = addr & 0xFF
+                operands = reg_name_plain(rn)
+                comment = f"indirect → registers[{reg_name_plain(rn)}]"
+            else:
+                lbl = label_map.get(addr, f"0x{addr:08X}")
+                operands = lbl
+                comment = f"→ byte {addr}"
 
         elif fmt == "reg":
             if pc >= n:
@@ -158,8 +175,10 @@ def decompile(data: bytes) -> list[dict]:
             r = data[pc]; raw.append(r); pc += 1
             addr_bytes = data[pc:pc+4]; raw += addr_bytes
             addr = struct.unpack_from("<I", data, pc)[0]; pc += 4
-            operands = f"{reg_name_plain(r)}  0x{addr:08X}"
-            if r in REGISTER_NAMES:
+            operands = f"{reg_name_plain(r)}  {addr_operand(addr)}"
+            if addr >= INDIRECT_BASE:
+                comment = f"RAM[registers[{reg_name_plain(addr & 0xFF)}]]"
+            elif r in REGISTER_NAMES:
                 comment = REGISTER_NAMES[r]
 
         elif fmt == "addr_reg":        # STORE / RAM_STORE addr reg
@@ -168,8 +187,11 @@ def decompile(data: bytes) -> list[dict]:
             addr_bytes = data[pc:pc+4]; raw += addr_bytes
             addr = struct.unpack_from("<I", data, pc)[0]; pc += 4
             r = data[pc]; raw.append(r); pc += 1
-            operands = f"0x{addr:08X}  {reg_name_plain(r)}"
-            if r in REGISTER_NAMES:
+            operands = f"{addr_operand(addr)}  {reg_name_plain(r)}"
+            if addr >= INDIRECT_BASE:
+                space = "VRAM" if mnemonic == "STORE" else "RAM"
+                comment = f"{space}[registers[{reg_name_plain(addr & 0xFF)}]] <- {reg_name_plain(r)}"
+            elif r in REGISTER_NAMES:
                 comment = REGISTER_NAMES[r]
 
         elif mnemonic == "???":
