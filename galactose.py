@@ -435,8 +435,41 @@ def detect_disk_format(path: Path) -> str:
 
 
 # ============================================================================
-# Opcode Definitions (Galactose VM 13-opcode RISC instruction set)
+# Opcode Definitions (Galactose VM RISC instruction set)
 # ============================================================================
+# The ISA is still exactly 13 opcodes (0x01-0x0D) - unchanged.
+#
+# Indirect addressing and indirect jumps are NOT new opcodes.  They are
+# expressed through the existing 32-bit address operand of the opcodes that
+# already carry one: LOAD, STORE, RAM_STORE, JMP and JZ.
+#
+# An address operand written as a register name (e.g. r50) is a
+# *register-indirect* address: it is encoded as INDIRECT_BASE | X and the
+# effective address (or jump target) is registers[X].
+#
+#   LOAD rD, rX          rD               <- RAM32[registers[X]]
+#   STORE rX, rY         VRAM[registers[X]]  <- registers[Y] & 0xFF
+#   RAM_STORE rX, rY     RAM32[registers[X]] <- registers[Y]
+#   JMP rX               pc <- registers[X]
+#   JZ  rX               pop; if 0 then pc <- registers[X]
+#
+# Only the exact shape 'r<digits>' marks indirection, so a label such as
+# 'render_loop' in a JMP/JZ target is still treated as a label.
+#
+# Why this is backward compatible: real RAM/VRAM addresses and code offsets are
+# far below 0xF0000000 (RAM defaults to 512 MB), so no previously-valid operand
+# ever lands in the sentinel range.  Every old .gcb keeps its exact meaning and
+# every old .gasm still compiles byte-for-byte identically.  The mnemonics are
+# unchanged too; only the address operand gains a register form.
+#
+# Addresses keep the same modulo wrap as before.  Register-indirect writes go
+# through the same memory paths as their direct forms.
+#
+# (The one thing not expressible without a fresh opcode - a pop into a register
+#  whose *number* is itself in a register - is deliberately omitted.  Index RAM
+#  with STORE/RAM_STORE [rX] instead.)
+
+INDIRECT_BASE = 0xF0000000   # address operand >= this -> register-indirect [rX]
 
 class Opcode(Enum):
     PUSH = 0x01
@@ -463,6 +496,28 @@ class BytecodeCompiler:
         if val_str.startswith('r'):
             return int(val_str.replace('r', ''))
         return int(val_str)
+
+    def _parse_indirect(self, tok):
+        """Return the sentinel address for a register operand like 'r50', or
+        None if tok is not a register token.
+
+        Register-indirect operands are written as an ordinary register name
+        (e.g. r7) in the address/target position and encoded as
+        INDIRECT_BASE | 7, so they ride inside the normal 32-bit address field
+        without any new opcode.  Only the exact shape 'r<digits>' counts, so a
+        label such as 'render_loop' is still treated as a label.
+        """
+        tok = tok.strip()
+        if len(tok) > 1 and tok[0] in ('r', 'R') and tok[1:].isdigit():
+            return INDIRECT_BASE | (int(tok[1:]) & 0xFF)
+        return None
+
+    def _addr_operand(self, tok):
+        """Decode a data address operand (literal or '[rX]') to a uint32."""
+        ind = self._parse_indirect(tok)
+        if ind is not None:
+            return ind
+        return self._parse_val(tok)
 
     def compile(self, assembly_text):
         lines = assembly_text.strip().split('\n')
@@ -494,22 +549,26 @@ class BytecodeCompiler:
             try:
                 if op == 'PUSH':
                     bytecode.append(Opcode.PUSH.value)
-                    bytecode.extend(struct.pack('<i', self._parse_val(parts[1])))
+                    tok = parts[1]
+                    try:
+                        bytecode.extend(struct.pack('<i', int(tok)))
+                    except ValueError:
+                        # Non-numeric operand = code label; resolve in pass two.
+                        # Materialises a label's byte offset, e.g.
+                        #   PUSH target / POP rN / JMP rN   (computed goto)
+                        self.label_refs.append((len(bytecode), tok))
+                        bytecode.extend(b'\x00\x00\x00\x00')
                 elif op == 'POP':
                     bytecode.append(Opcode.POP.value)
                     bytecode.append(self._parse_val(parts[1]))
                 elif op in ['ADD', 'SUB', 'HALT', 'WRITE_DISK', 'READ_DISK']:
                     bytecode.append(Opcode[op].value)
-                elif op == 'JMP':
-                    bytecode.append(Opcode.JMP.value)
-                    if parts[1].isdigit():
-                        bytecode.extend(struct.pack('<I', int(parts[1])))
-                    else:
-                        self.label_refs.append((len(bytecode), parts[1]))
-                        bytecode.extend(b'\x00\x00\x00\x00')
-                elif op == 'JZ':
-                    bytecode.append(Opcode.JZ.value)
-                    if parts[1].isdigit():
+                elif op in ('JMP', 'JZ'):
+                    bytecode.append(Opcode[op].value)
+                    ind = self._parse_indirect(parts[1])
+                    if ind is not None:
+                        bytecode.extend(struct.pack('<I', ind))
+                    elif parts[1].isdigit():
                         bytecode.extend(struct.pack('<I', int(parts[1])))
                     else:
                         self.label_refs.append((len(bytecode), parts[1]))
@@ -517,14 +576,14 @@ class BytecodeCompiler:
                 elif op == 'LOAD':
                     bytecode.append(Opcode.LOAD.value)
                     bytecode.append(self._parse_val(parts[1]))
-                    bytecode.extend(struct.pack('<I', self._parse_val(parts[2])))
+                    bytecode.extend(struct.pack('<I', self._addr_operand(parts[2])))
                 elif op == 'STORE':
                     bytecode.append(Opcode.STORE.value)
-                    bytecode.extend(struct.pack('<I', self._parse_val(parts[1])))
+                    bytecode.extend(struct.pack('<I', self._addr_operand(parts[1])))
                     bytecode.append(self._parse_val(parts[2]))
                 elif op == 'RAM_STORE':
                     bytecode.append(Opcode.RAM_STORE.value)
-                    bytecode.extend(struct.pack('<I', self._parse_val(parts[1])))
+                    bytecode.extend(struct.pack('<I', self._addr_operand(parts[1])))
                     bytecode.append(self._parse_val(parts[2]))
                 elif op == 'PUSH_REG':
                     bytecode.append(Opcode.PUSH_REG.value)
@@ -952,6 +1011,35 @@ class BytecodeVM:
         if self.root:
             self.root.mainloop()
 
+    def _set_register(self, r, v):
+        """Write a register, honouring the device side-effects POP exposes.
+
+        Used by POP so writing r200/r255/r210 still plays a tone, sleeps,
+        or fires a network op.
+        """
+        self.registers[r] = v
+        if r == self.freq_reg:
+            freq, dur = v, self.registers[self.dur_reg]
+            if dur <= 0: dur = 100
+            threading.Thread(target=play_tone, args=(freq, dur), daemon=True).start()
+        elif r == self.timing_reg:
+            if v > 0: time.sleep(v / 1000.0)
+        elif r == self.NET_CMD and v != 0:
+            # Writing a non-zero command to NET_CMD fires the network
+            # operation asynchronously so the VM loop is never blocked.
+            threading.Thread(target=self._net_exec, daemon=True).start()
+
+    def _resolve_addr(self, raw):
+        """Turn an address operand into an effective address.
+
+        Operands in the sentinel range (>= INDIRECT_BASE) are register-indirect:
+        the effective address is registers[raw & 0xFF].  Everything else is a
+        plain literal address - so all pre-existing bytecode is unaffected.
+        """
+        if raw >= INDIRECT_BASE:
+            return self.registers[raw & 0xFF]
+        return raw
+
     def _dispatch(self, op):
         try:
             if op == Opcode.PUSH.value:
@@ -960,17 +1048,7 @@ class BytecodeVM:
             elif op == Opcode.POP.value:
                 r = self.bytecode[self.pc]; self.pc += 1
                 v = self.stack.pop() if self.stack else 0
-                self.registers[r] = v
-                if r == self.freq_reg:
-                    freq, dur = v, self.registers[self.dur_reg]
-                    if dur <= 0: dur = 100
-                    threading.Thread(target=play_tone, args=(freq, dur), daemon=True).start()
-                elif r == self.timing_reg:
-                    if v > 0: time.sleep(v / 1000.0)
-                elif r == self.NET_CMD and v != 0:
-                    # Writing a non-zero command to NET_CMD fires the network
-                    # operation asynchronously so the VM loop is never blocked.
-                    threading.Thread(target=self._net_exec, daemon=True).start()
+                self._set_register(r, v)
             elif op == Opcode.ADD.value:
                 if len(self.stack) >= 2: self.stack.append(self.stack.pop() + self.stack.pop())
             elif op == Opcode.SUB.value:
@@ -980,22 +1058,25 @@ class BytecodeVM:
             elif op == Opcode.STORE.value:
                 addr = struct.unpack_from('<I', self.bytecode, self.pc)[0]; self.pc += 4
                 r = self.bytecode[self.pc]; self.pc += 1
+                addr = self._resolve_addr(addr)
                 self.vram[addr % len(self.vram)] = self.registers[r] & 0xFF
             elif op == Opcode.RAM_STORE.value:
                 addr = struct.unpack_from('<I', self.bytecode, self.pc)[0]; self.pc += 4
                 r = self.bytecode[self.pc]; self.pc += 1
+                addr = self._resolve_addr(addr)
                 # Write register value to System Memory (not VRAM)
                 struct.pack_into('<i', self.memory, addr % len(self.memory), self.registers[r])
             elif op == Opcode.LOAD.value:
                 r = self.bytecode[self.pc]; self.pc += 1
                 addr = struct.unpack_from('<I', self.bytecode, self.pc)[0]; self.pc += 4
+                addr = self._resolve_addr(addr)
                 val = struct.unpack_from('<i', self.memory, addr % len(self.memory))[0]
                 self.registers[r] = val
             elif op == Opcode.JMP.value:
-                self.pc = struct.unpack_from('<I', self.bytecode, self.pc)[0]
+                self.pc = self._resolve_addr(struct.unpack_from('<I', self.bytecode, self.pc)[0])
             elif op == Opcode.JZ.value:
                 addr = struct.unpack_from('<I', self.bytecode, self.pc)[0]; self.pc += 4
-                if not self.stack or self.stack.pop() == 0: self.pc = addr
+                if not self.stack or self.stack.pop() == 0: self.pc = self._resolve_addr(addr)
             elif op == Opcode.WRITE_DISK.value:
                 length = self.stack.pop()
                 addr   = self.stack.pop()
